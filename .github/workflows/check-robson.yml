@@ -32,7 +32,7 @@ jobs:
         run: npx playwright install-deps
       - name: Install dependencies
         run: |
-          npm install
+          npm install --audit-level=none
           npx playwright install
       - name: Run availability script
         env:
