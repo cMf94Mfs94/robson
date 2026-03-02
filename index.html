@@ -232,6 +232,10 @@ async function checkAvailability() {
 
   // notification helper -------------------------------------------------
   async function sendEmail(subject, text) {
+    console.log('\n[EMAIL] attempting to send notification');
+    console.log('[EMAIL] from:', process.env.EMAIL_FROM);
+    console.log('[EMAIL] to:', process.env.EMAIL_TO);
+    console.log('[EMAIL] via:', process.env.SMTP_HOST + ':' + process.env.SMTP_PORT);
     try {
       const nodemailer = require('nodemailer');
       const transporter = nodemailer.createTransport({
@@ -243,15 +247,20 @@ async function checkAvailability() {
           pass: process.env.SMTP_PASS,
         },
       });
-      await transporter.sendMail({
+      console.log('[EMAIL] testing SMTP connection...');
+      await transporter.verify();
+      console.log('[EMAIL] SMTP connection verified');
+      const info = await transporter.sendMail({
         from: process.env.EMAIL_FROM,
         to: process.env.EMAIL_TO,
         subject,
         text,
       });
-      console.log('notification email sent');
+      console.log('[EMAIL] successfully sent, message ID:', info.messageId);
     } catch (e) {
-      console.error('failed to send notification email', e);
+      console.error('[EMAIL] FAILED:', e.message);
+      console.error('[EMAIL] code:', e.code);
+      console.error('[EMAIL] details:', e);
     }
   }
 
