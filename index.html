@@ -1,0 +1,280 @@
+#!/usr/bin/env node
+/*
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Robson Pass Hut Availability Monitor</title>
+</head>
+<body>
+  <h1>Robson Pass Hut Availability Monitor</h1>
+  <p>This file is a hybrid script.  It contains Node.js code that uses Playwright to
+  drive a headless browser and inspect the Mews booking calendar.  You should
+  <strong>run it with Node</strong> rather than opening it in a regular web browser.
+  </p>
+  <p>Usage:
+    <code>npm install playwright</code> (or <code>pip</code> if you prefer a Python
+    version) then
+    <code>node index.html</code>.
+  </p>
+</body>
+</html>
+*/
+
+// ---------- Node.js portion begins here ----------
+
+const { chromium } = require('playwright');
+
+// Configuration -------------------------------------------------------------
+const URL = 'https://alpineclubofcanada.ca/hut/robson-pass-hut/';
+const BOOK_BUTTON_SELECTOR = 'text=BOOK HUT';
+const TARGET_YEARS = new Set([2026]);
+const TARGET_MONTHS = new Set([7, 8]); // July & August
+
+// threshold for sending an email; only count spaces between July 1 and Aug 30
+const EMAIL_SPACE_THRESHOLD = 2;
+
+// selectors within the distributor iframe; these are educated guesses
+const MONTH_SELECTOR = '.mews-calendar-month';
+const DAY_SELECTOR = '.mews-calendar-day';
+
+async function checkAvailability() {
+  const browser = await chromium.launch({ headless: true });
+  const VERBOSE = process.env.VERBOSE === '1';
+  const page = await browser.newPage();
+
+  // we'll remember the first availability request so we can reissue it with a
+  // wider date range, plus the calendar data mapping so we can identify the
+  // Robson Pass category ID.
+  let initialAvailabilityPayload = null;
+  let calendarData = null;
+
+  page.on('console', msg => {
+    if (VERBOSE) console.log('PAGE LOG>', msg.text());
+  });
+
+  page.on('request', async req => {
+    const url = req.url();
+    if (VERBOSE) console.log('REQ>', req.method(), url);
+    if (req.method() === 'POST' && url.includes('/services/getAvailability')) {
+      const data = await req.postData();
+      if (VERBOSE) console.log('  >> POST BODY:', data);
+      require('fs').writeFileSync(`request-${url.split('/').pop()}.json`, data || '');
+      try {
+        initialAvailabilityPayload = JSON.parse(data);
+      } catch {}
+    }
+    if (req.method() === 'POST' && url.includes('/services/getCalendarData')) {
+      const data = await req.postData();
+      if (VERBOSE) console.log('  >> POST BODY:', data);
+      require('fs').writeFileSync(`request-${url.split('/').pop()}.json`, data || '');
+    }
+  });
+
+  page.on('response', async res => {
+    const url = res.url();
+    if (VERBOSE) console.log('RESP>', res.status(), url);
+    if (url.includes('/services/getAvailability')) {
+      try {
+        const text = await res.text();
+        if (VERBOSE) console.log('  << RESPONSE BODY:', text.slice(0, 1000));
+        require('fs').writeFileSync(`response-${url.split('/').pop()}.json`, text);
+      } catch (e) {
+        console.error('failed to read response body', e);
+      }
+    }
+    if (url.includes('/services/getCalendarData')) {
+      try {
+        const text = await res.text();
+        if (VERBOSE) console.log('  << RESPONSE BODY (calendarData snippet):', text.slice(0, 1000));
+        require('fs').writeFileSync(`response-${url.split('/').pop()}.json`, text);
+        try {
+          calendarData = JSON.parse(text);
+        } catch (e) {
+          console.error('parse calendarData failed', e);
+        }
+      } catch (e) {
+        console.error('failed to read calendarData body', e);
+      }
+    }
+  });
+
+  page.on('requestfailed', req => console.log('REQ FAILED>', req.url(), req.failure()?.errorText));
+  try {
+    await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    console.error('failed to load page:', e.message);
+    throw e;
+  }
+
+  // click the booking link and wait for the widget to attach
+  // click the booking button; if it isn't immediately present we wait
+  try {
+    await page.click(BOOK_BUTTON_SELECTOR, { timeout: 10000 });
+  } catch (e) {
+    console.error('cannot find BOOK HUT button:', e.message);
+    throw e;
+  }
+
+  // take a screenshot to see what the page looks like after clicking
+  await page.screenshot({ path: 'after_click.png', fullPage: true });
+  // dump the page HTML for debugging
+  const html = await page.content();
+  require('fs').writeFileSync('after_click.html', html);
+
+  // when the "BOOK HUT" button is clicked the distributor widget issues
+  // availability/calendar API calls; we capture those in our listeners above.
+  // we don't actually need to interact with the iframe itself, which is
+  // hidden and may not ever become visible in headless mode. give the page a
+  // few seconds for the requests to fire.
+  await page.waitForTimeout(3000);
+
+  // if we got an initial availability payload, we'll use the API response
+  // path further down; otherwise we could fall back to DOM scraping (rare).
+  // prepare a fallback results array in case the API path doesn't produce data.
+  const results = [];
+
+  // if we captured the initial availability payload, try issuing a fresh
+  // request that spans July–August and parse the numbers directly from the
+  // API. fall back to the DOM results if something goes wrong.
+  let apiResults = [];
+  if (initialAvailabilityPayload) {
+    const payload = { ...initialAvailabilityPayload };
+    // extend the query window to cover July + August
+    payload.startUtc = '2026-07-01T06:00:00.000Z';
+    payload.endUtc = '2026-09-01T06:00:00.000Z';
+
+    try {
+      const availResp = await page.request.post(
+        'https://api.mews.com/api/bookingEngine/v1/services/getAvailability',
+        { headers: { 'content-type': 'application/json' }, data: payload }
+      );
+      const availJson = await availResp.json();
+      require('fs').writeFileSync('apiAvailability.json', JSON.stringify(availJson, null, 2));
+
+      // determine categoryId for Robson Pass using calendarData if we have it
+      let targetCategoryId = null;
+      if (calendarData && calendarData.resourceCategories) {
+        for (const c of calendarData.resourceCategories) {
+          const name = (c.name && (c.name['en-US'] || ''));
+          if (name.includes('Robson Pass')) {
+            targetCategoryId = c.id;
+            break;
+          }
+        }
+      }
+      if (!targetCategoryId) {
+        // fallback hardcoded from earlier discovery
+        targetCategoryId = 'ac355aa4-3fad-4a5a-8082-b3f401308a7f';
+      }
+
+      const categories = availJson.CategoryAvailabilities || availJson.categoryAvailabilities || [];
+      console.log('DEBUG: categories length', categories.length);
+      const catEntry = categories.find(c =>
+        (c.CategoryId && c.CategoryId === targetCategoryId) ||
+        (c.categoryId && c.categoryId === targetCategoryId)
+      );
+      if (catEntry) {
+        const times = availJson.TimeUnitStartsUtc || availJson.timeUnitStartsUtc || [];
+        for (let i = 0; i < times.length; ++i) {
+          const dt = new Date(times[i]);
+          const year = dt.getUTCFullYear();
+          const month = dt.getUTCMonth() + 1;
+          const day = dt.getUTCDate();
+          if (year === 2026 && (month === 7 || month === 8)) {
+            const availArr = catEntry.Availabilities || catEntry.availabilities || [];
+            const count = availArr[i] || 0;
+            // omit August 31 since our notification window stops at the 30th
+            if (!(month === 8 && day === 31)) {
+              apiResults.push({ year, month, day, available: count > 0, spaces: count });
+            }
+          }
+        }
+      } else {
+        console.warn('DEBUG: no entry found for category', targetCategoryId);
+      }
+    } catch (e) {
+      console.error('api availability fetch failed', e);
+    }
+  }
+
+  await browser.close();
+  return apiResults.length > 0 ? apiResults : results;
+}
+
+(async () => {
+  const avail = await checkAvailability();
+  if (avail.length === 0) {
+    console.log('no calendar data retrieved – verify selectors or check for changes');
+    return;
+  }
+
+  console.log('availability for July/August 2026:');
+  let openDays = 0;
+  let totalSpaces = 0;
+  for (const entry of avail) {
+    const { year, month, day, available, spaces } = entry;
+    const date = `${year}-${month.toString().padStart(2, '0')}-${day
+      .toString()
+      .padStart(2, '0')}`;
+    if (spaces != null) {
+      console.log(`${date} : ${available ? 'OPEN' : 'closed'} (${spaces} spaces)`);
+      if (available) {
+        openDays += 1;
+        totalSpaces += spaces;
+      }
+    } else {
+      console.log(`${date} : ${available ? 'OPEN' : 'closed'}`);
+      if (available) openDays += 1;
+    }
+  }
+  console.log(`\nsummary: ${openDays} open day(s), ${totalSpaces} total space(s)`);
+
+  // notification helper -------------------------------------------------
+  async function sendEmail(subject, text) {
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        secure: false, // assume STARTTLS
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM,
+        to: process.env.EMAIL_TO,
+        subject,
+        text,
+      });
+      console.log('notification email sent');
+    } catch (e) {
+      console.error('failed to send notification email', e);
+    }
+  }
+
+  // compute how many spaces fall within the alert window (July1‑Aug30)
+  let alertSpaces = 0;
+  for (const entry of avail) {
+    const { month, day, spaces } = entry;
+    if (spaces && ((month === 7) || (month === 8 && day <= 30))) {
+      alertSpaces += spaces;
+    }
+  }
+
+  const testMode = process.env.TEST_EMAIL === 'true';
+  if (testMode || alertSpaces >= EMAIL_SPACE_THRESHOLD) {
+    const subject = `Robson Pass Hut: ${alertSpaces} space(s) available`;
+    let body = `The following days have availability (total ${alertSpaces}):\n`;
+    for (const entry of avail) {
+      const { year, month, day, available, spaces } = entry;
+      if (available && spaces) {
+        body += `${year}-${month.toString().padStart(2,'0')}-${day.toString().padStart(2,'0')} : ${spaces} space(s)\n`;
+      }
+    }
+    await sendEmail(subject, body);
+  }
+
+})();
