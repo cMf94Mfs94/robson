@@ -22,7 +22,7 @@ jobs:
           node-version: '18'
       - name: Install dependencies
         run: |
-          npm ci
+          npm install
           npx playwright install --with-deps
       - name: Run availability script
         env:
