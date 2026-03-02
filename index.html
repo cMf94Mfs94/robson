@@ -127,7 +127,7 @@ async function checkAvailability() {
   // we don't actually need to interact with the iframe itself, which is
   // hidden and may not ever become visible in headless mode. give the page a
   // few seconds for the requests to fire.
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(8000);
 
   // if we got an initial availability payload, we'll use the API response
   // path further down; otherwise we could fall back to DOM scraping (rare).
@@ -136,14 +136,11 @@ async function checkAvailability() {
 
   // if we captured the initial availability payload, try issuing a fresh
   // request that spans July–August and parse the numbers directly from the
-  // API. fall back to the DOM results if something goes wrong.
+  // API. If the widget didn't emit network requests (common in headless runs)
+  // try a hardcoded fallback payload that we observed earlier.
   let apiResults = [];
-  if (initialAvailabilityPayload) {
-    const payload = { ...initialAvailabilityPayload };
-    // extend the query window to cover July + August
-    payload.startUtc = '2026-07-01T06:00:00.000Z';
-    payload.endUtc = '2026-09-01T06:00:00.000Z';
 
+  async function fetchAvailabilityWithPayload(payload) {
     try {
       const availResp = await page.request.post(
         'https://api.mews.com/api/bookingEngine/v1/services/getAvailability',
@@ -196,6 +193,45 @@ async function checkAvailability() {
     } catch (e) {
       console.error('api availability fetch failed', e);
     }
+  }
+
+  // if we have the widget payload, reuse and extend it
+  if (initialAvailabilityPayload) {
+    const payload = { ...initialAvailabilityPayload };
+    payload.startUtc = '2026-07-01T06:00:00.000Z';
+    payload.endUtc = '2026-09-01T06:00:00.000Z';
+    await fetchAvailabilityWithPayload(payload);
+  } else {
+    // fallback: try to fetch calendarData explicitly, then invoke the API
+    console.warn('No initial availability payload captured; using fallback API payload');
+
+    // try to fetch calendar data first (helps us find category IDs)
+    try {
+      const calResp = await page.request.post(
+        'https://api.mews.com/api/bookingEngine/v1/services/getCalendarData',
+        { headers: { 'content-type': 'application/json' }, data: { client: 'Mews Distributor 5558.0.0', bookingEngineId: 'c72238e6-71e8-4add-bb03-b3ab0143b211' } }
+      );
+      const calJson = await calResp.json();
+      require('fs').writeFileSync('apiCalendarData.json', JSON.stringify(calJson, null, 2));
+      calendarData = calJson;
+    } catch (e) {
+      console.warn('calendarData fetch failed', e.message || e);
+    }
+
+    // construct a conservative availability request based on earlier captures
+    const fallbackPayload = {
+      serviceId: 'd2c54c75-7334-40f1-84f8-b30200de4138',
+      bookingEngineId: 'c72238e6-71e8-4add-bb03-b3ab0143b211',
+      startUtc: '2026-07-01T06:00:00.000Z',
+      endUtc: '2026-09-01T06:00:00.000Z',
+      enterpriseId: '26199ce6-e3a6-42dc-8396-b30200de3346',
+      fullAmounts: false,
+      languageCode: 'en-US',
+      client: 'Mews Distributor 5558.0.0',
+      session: ''
+    };
+
+    await fetchAvailabilityWithPayload(fallbackPayload);
   }
 
   await browser.close();
