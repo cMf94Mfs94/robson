@@ -23,13 +23,17 @@ jobs:
           cache: 'npm'
       - name: Cache Playwright browsers
         uses: actions/cache@v3
+        id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+      - name: Install system dependencies (cache miss only)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install-deps
       - name: Install dependencies
         run: |
           npm install
-          npx playwright install --with-deps
+          npx playwright install
       - name: Run availability script
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
