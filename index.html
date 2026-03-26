@@ -32,7 +32,82 @@ const TARGET_YEARS = new Set([2026]);
 const TARGET_MONTHS = new Set([7, 8]); // July & August
 
 // threshold for sending an email; only count spaces between July 1 and Aug 30
-const EMAIL_SPACE_THRESHOLD = 2;
+const EMAIL_SPACE_THRESHOLD = Number.parseInt(process.env.EMAIL_SPACE_THRESHOLD || '2', 10);
+// how many consecutive available dates are required to trigger an email
+const CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD = Number.parseInt(process.env.CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD || '1', 10);
+// comma-separated list of dates to ignore for the notify trigger (e.g. "July 19, August 3, 5")
+const IGNORED_DATES = process.env.IGNORED_DATES || 'July 19, August 3, 5';
+
+function normalizeIgnoredDates(raw) {
+  const monthNames = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+    jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  };
+
+  const normalized = new Set();
+  const items = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  let lastMonth = null; // used for day-only entries like "5" after a month context
+  for (const item of items) {
+    // Accept "August 4" or "8/4" or "8-4" or "4 Aug" or day-only "5".
+    const tokens = item.replace(/[\-\/]/g, ' ').split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) continue;
+
+    let month = null;
+    let day = null;
+    let year = 2026;
+
+    if (tokens.length === 1 && Number.isFinite(Number(tokens[0]))) {
+      // e.g. "5" as day on the previously mentioned month (e.g. "August 3, 5")
+      day = Number(tokens[0]);
+      month = lastMonth;
+    } else if (tokens.length === 2) {
+      const [a, b] = tokens;
+      const aLower = a.toLowerCase();
+      const bLower = b.toLowerCase();
+      if (monthNames[aLower] != null && Number.isFinite(Number(b))) {
+        month = monthNames[aLower];
+        day = Number(b);
+      } else if (monthNames[bLower] != null && Number.isFinite(Number(a))) {
+        month = monthNames[bLower];
+        day = Number(a);
+      } else {
+        const parsedA = Number(a);
+        const parsedB = Number(b);
+        if (!Number.isNaN(parsedA) && !Number.isNaN(parsedB)) {
+          month = parsedA;
+          day = parsedB;
+        }
+      }
+    }
+
+    if (tokens.length === 3) {
+      // e.g. "August 4 2026" or "4 August 2026"
+      const [p1, p2, p3] = tokens;
+      const parsedP3 = Number(p3);
+      if (!Number.isNaN(parsedP3)) {
+        year = parsedP3;
+      }
+      if (monthNames[p1.toLowerCase()] != null && Number.isFinite(Number(p2))) {
+        month = monthNames[p1.toLowerCase()];
+        day = Number(p2);
+      } else if (monthNames[p2.toLowerCase()] != null && Number.isFinite(Number(p1))) {
+        month = monthNames[p2.toLowerCase()];
+        day = Number(p1);
+      }
+    }
+
+    if (month && day) {
+      lastMonth = month;
+      const key = `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      normalized.add(key);
+    }
+  }
+
+  return normalized;
+}
+
+const EXCLUDED_DATE_KEYS = normalizeIgnoredDates(IGNORED_DATES);
 
 // selectors within the distributor iframe; these are educated guesses
 const MONTH_SELECTOR = '.mews-calendar-month';
@@ -300,17 +375,58 @@ async function checkAvailability() {
     }
   }
 
-  // compute how many spaces fall within the alert window (July1‑Aug30)
+  const isInWindow = ({ month, day }) => (month === 7) || (month === 8 && day <= 30);
+  const toDateKey = ({ year, month, day }) =>
+    `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+
   let alertSpaces = 0;
+  const availableDateKeys = new Set();
   for (const entry of avail) {
-    const { month, day, spaces } = entry;
-    if (spaces && ((month === 7) || (month === 8 && day <= 30))) {
+    const { year, month, day, spaces } = entry;
+    if (!isInWindow(entry)) continue;
+    const key = toDateKey(entry);
+    if (EXCLUDED_DATE_KEYS.has(key)) continue;
+
+    if (spaces && spaces > 0) {
       alertSpaces += spaces;
+      availableDateKeys.add(key);
     }
   }
 
+  const computeLongestConsecutiveDays = (availableKeys) => {
+    let longest = 0;
+    let streak = 0;
+
+    for (let d = 1; d <= 31; d++) {
+      const key = `2026-07-${d.toString().padStart(2, '0')}`;
+      if (availableKeys.has(key)) {
+        streak += 1;
+        longest = Math.max(longest, streak);
+      } else {
+        streak = 0;
+      }
+    }
+    for (let d = 1; d <= 30; d++) {
+      const key = `2026-08-${d.toString().padStart(2, '0')}`;
+      if (availableKeys.has(key)) {
+        streak += 1;
+        longest = Math.max(longest, streak);
+      } else {
+        streak = 0;
+      }
+    }
+    return longest;
+  };
+
+  const longestConsecutive = computeLongestConsecutiveDays(availableDateKeys);
+  console.log(`computed alertSpaces=${alertSpaces}, longestConsecutive=${longestConsecutive}, emailThreshold=${EMAIL_SPACE_THRESHOLD}, consecutiveThreshold=${CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD}, excludedDates=${Array.from(EXCLUDED_DATE_KEYS).join(', ')}`);
+
   const testMode = process.env.TEST_EMAIL === 'true';
-  if (testMode || alertSpaces >= EMAIL_SPACE_THRESHOLD) {
+  if (
+    testMode ||
+    alertSpaces >= EMAIL_SPACE_THRESHOLD ||
+    longestConsecutive >= CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD
+  ) {
     const subject = `Robson Pass Hut: ${alertSpaces} space(s) available`;
     let body = `The following days have availability (total ${alertSpaces}):\n`;
     for (const entry of avail) {
