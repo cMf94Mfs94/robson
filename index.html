@@ -379,7 +379,8 @@ async function checkAvailability() {
   const toDateKey = ({ year, month, day }) =>
     `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
 
-  let alertSpaces = 0;
+  let eligibleSpaceDays = 0;
+  let windowSpaces = 0;
   const availableDateKeys = new Set();
   for (const entry of avail) {
     const { year, month, day, spaces } = entry;
@@ -388,7 +389,10 @@ async function checkAvailability() {
     if (EXCLUDED_DATE_KEYS.has(key)) continue;
 
     if (spaces && spaces > 0) {
-      alertSpaces += spaces;
+      windowSpaces += spaces;
+    }
+    if (spaces && spaces >= EMAIL_SPACE_THRESHOLD) {
+      eligibleSpaceDays += 1;
       availableDateKeys.add(key);
     }
   }
@@ -419,19 +423,19 @@ async function checkAvailability() {
   };
 
   const longestConsecutive = computeLongestConsecutiveDays(availableDateKeys);
-  console.log(`computed alertSpaces=${alertSpaces}, longestConsecutive=${longestConsecutive}, emailThreshold=${EMAIL_SPACE_THRESHOLD}, consecutiveThreshold=${CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD}, excludedDates=${Array.from(EXCLUDED_DATE_KEYS).join(', ')}`);
+  console.log(`computed eligibleSpaceDays=${eligibleSpaceDays}, windowSpaces=${windowSpaces}, longestConsecutive=${longestConsecutive}, emailThreshold=${EMAIL_SPACE_THRESHOLD}, consecutiveThreshold=${CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD}, excludedDates=${Array.from(EXCLUDED_DATE_KEYS).join(', ')}`);
 
   const testMode = process.env.TEST_EMAIL === 'true';
   if (
     testMode ||
-    alertSpaces >= EMAIL_SPACE_THRESHOLD ||
+    eligibleSpaceDays > 0 ||
     longestConsecutive >= CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD
   ) {
-    const subject = `Robson Pass Hut: ${alertSpaces} space(s) available`;
-    let body = `The following days have availability (total ${alertSpaces}):\n`;
+    const subject = `Robson Pass Hut: ${eligibleSpaceDays} day(s) match space threshold (${EMAIL_SPACE_THRESHOLD})`;
+    let body = `The following days have availability meeting the per-day threshold (${EMAIL_SPACE_THRESHOLD}):\n`;
     for (const entry of avail) {
       const { year, month, day, available, spaces } = entry;
-      if (available && spaces) {
+      if (available && spaces && spaces >= EMAIL_SPACE_THRESHOLD) {
         body += `${year}-${month.toString().padStart(2,'0')}-${day.toString().padStart(2,'0')} : ${spaces} space(s)\n`;
       }
     }
