@@ -44,4 +44,7 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           TEST_EMAIL: ${{ github.event.inputs.test_email }}
           VERBOSE: ${{ secrets.VERBOSE }}
+          EMAIL_SPACE_THRESHOLD: ${{ secrets.EMAIL_SPACE_THRESHOLD || '2' }}
+          CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD: ${{ secrets.CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD || '1' }}
+          IGNORED_DATES: ${{ secrets.IGNORED_DATES || 'July 19, August 3, 5' }}
         run: node index.html
