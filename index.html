@@ -34,9 +34,9 @@ const TARGET_MONTHS = new Set([7, 8]); // July & August
 // threshold for sending an email; only count spaces between July 1 and Aug 30
 const EMAIL_SPACE_THRESHOLD = Number.parseInt(process.env.EMAIL_SPACE_THRESHOLD || '2', 10);
 // how many consecutive available dates are required to trigger an email
-const CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD = Number.parseInt(process.env.CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD || '1', 10);
+const CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD = Number.parseInt(process.env.CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD || '2', 10);
 // comma-separated list of dates to ignore for the notify trigger (e.g. "July 19, August 3, 5")
-const IGNORED_DATES = process.env.IGNORED_DATES || 'July 19, August 3, 5';
+const IGNORED_DATES = process.env.IGNORED_DATES || 'July 19';
 
 function normalizeIgnoredDates(raw) {
   const monthNames = {
