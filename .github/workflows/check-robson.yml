@@ -27,6 +27,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+      - name: Cache alert state
+        uses: actions/cache@v3
+        with:
+          path: last-alert-state.json
+          key: robson-alert-state
       - name: Install system dependencies (cache miss only)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install-deps
