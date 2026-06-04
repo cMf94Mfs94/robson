@@ -425,11 +425,39 @@ async function checkAvailability() {
   const longestConsecutive = computeLongestConsecutiveDays(availableDateKeys);
   console.log(`computed eligibleSpaceDays=${eligibleSpaceDays}, windowSpaces=${windowSpaces}, longestConsecutive=${longestConsecutive}, emailThreshold=${EMAIL_SPACE_THRESHOLD}, consecutiveThreshold=${CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD}, excludedDates=${Array.from(EXCLUDED_DATE_KEYS).join(', ')}`);
 
+  // Load previous alert state for change detection
+  const fs = require('fs');
+  const STATE_FILE = 'last-alert-state.json';
+  let previousState = null;
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = fs.readFileSync(STATE_FILE, 'utf-8');
+      previousState = JSON.parse(data);
+    }
+  } catch (e) {
+    console.log('Could not load previous state:', e.message);
+  }
+
+  // Build current state
+  const currentState = {
+    eligibleSpaceDays,
+    windowSpaces,
+    longestConsecutive,
+    availableDates: Array.from(availableDateKeys).sort(),
+    timestamp: new Date().toISOString()
+  };
+
+  // Check if state has changed since last alert
+  const hasStateChanged = !previousState || 
+    JSON.stringify(previousState.availableDates) !== JSON.stringify(currentState.availableDates) ||
+    previousState.eligibleSpaceDays !== currentState.eligibleSpaceDays ||
+    previousState.longestConsecutive !== currentState.longestConsecutive;
+
   const testMode = process.env.TEST_EMAIL === 'true';
   if (
     testMode ||
-    eligibleSpaceDays > 0 ||
-    longestConsecutive >= CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD
+    (hasStateChanged && (eligibleSpaceDays > 0 ||
+    longestConsecutive >= CONSECUTIVE_AVAILABLE_DAYS_THRESHOLD))
   ) {
     const subject = `Robson Pass Hut: ${eligibleSpaceDays} day(s) match space threshold (${EMAIL_SPACE_THRESHOLD})`;
     let body = `The following days have availability meeting the per-day threshold (${EMAIL_SPACE_THRESHOLD}):\n`;
@@ -440,6 +468,16 @@ async function checkAvailability() {
       }
     }
     await sendEmail(subject, body);
+    
+    // Save current state after successful email
+    try {
+      fs.writeFileSync(STATE_FILE, JSON.stringify(currentState, null, 2));
+      console.log('State saved to', STATE_FILE);
+    } catch (e) {
+      console.error('Failed to save state:', e.message);
+    }
+  } else if (!testMode && previousState) {
+    console.log('State unchanged since last alert – email suppressed');
   }
 
 })();
