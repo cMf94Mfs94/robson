@@ -368,10 +368,12 @@ async function checkAvailability() {
         text,
       });
       console.log('[EMAIL] successfully sent, message ID:', info.messageId);
+      return true;
     } catch (e) {
       console.error('[EMAIL] FAILED:', e.message);
       console.error('[EMAIL] code:', e.code);
       console.error('[EMAIL] details:', e);
+      return false;
     }
   }
 
@@ -427,9 +429,11 @@ async function checkAvailability() {
 
   // Load previous alert state for change detection
   const fs = require('fs');
-  const STATE_FILE = 'last-alert-state.json';
+  const path = require('path');
+  const STATE_FILE = path.join(__dirname, 'last-alert-state.json');
   let previousState = null;
   try {
+    console.log('Loading previous alert state from', STATE_FILE);
     if (fs.existsSync(STATE_FILE)) {
       const data = fs.readFileSync(STATE_FILE, 'utf-8');
       previousState = JSON.parse(data);
@@ -467,14 +471,16 @@ async function checkAvailability() {
         body += `${year}-${month.toString().padStart(2,'0')}-${day.toString().padStart(2,'0')} : ${spaces} space(s)\n`;
       }
     }
-    await sendEmail(subject, body);
-    
-    // Save current state after successful email
-    try {
-      fs.writeFileSync(STATE_FILE, JSON.stringify(currentState, null, 2));
-      console.log('State saved to', STATE_FILE);
-    } catch (e) {
-      console.error('Failed to save state:', e.message);
+    const emailSent = await sendEmail(subject, body);
+    if (emailSent) {
+      try {
+        fs.writeFileSync(STATE_FILE, JSON.stringify(currentState, null, 2));
+        console.log('State saved to', STATE_FILE);
+      } catch (e) {
+        console.error('Failed to save state:', e.message);
+      }
+    } else {
+      console.error('Email was not sent; state not saved so next run can retry.');
     }
   } else if (!testMode && previousState) {
     console.log('State unchanged since last alert – email suppressed');
